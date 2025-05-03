@@ -3,6 +3,12 @@
 
 int disassembleOp8080(unsigned char *buffer, int pc);
 
+// List of registers (the X register represents memory operations)
+char registers8080[] = {'B', 'C', 'D', 'E', 'H', 'L', 'X', 'A'};
+
+// List of condition codes
+char conditions8080[][10] = {"NZ", " Z", "NC", " C", "PO", "PE", " P", " M"};
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printf("Please include a file when running the 8080 disassembler.\n");
@@ -83,8 +89,8 @@ int disassembleOp8080(unsigned char *buffer, int pc) {
         case 0b00000111: printf("         RLC    (An+1) <- (An) (A0) <- (A7) (CY) <- (A7)"); break;
         // CPI: Compare immediate (takes 2 cycles)
         case 0b11111110: opsize = 2; printf("%02X       CPI %02X", instruction[1], instruction[1]); break;
-        // CMP M: Compare memory (takes 2 cycles)
-        case 0b10111110: printf("         CMP M  (A) - ((H) (L))"); break;
+        // ORI data: OR Immediate (takes 2 cycles)
+        case 0b11110110: opsize = 2; printf("%02X       ORI    (A) <- (A) V %02X", instruction[1], instruction[1]); break;
         
         default: opsize = 0; break;
     }
@@ -152,25 +158,46 @@ int disassembleOp8080(unsigned char *buffer, int pc) {
         else if ((*instruction & 0b11000111) == 0b11000000)
         {
             opsize = 1;
-            printf("         R%01X", (*instruction & 0b00111000) >> 3);
+            printf("         R %s", conditions8080[(*instruction & 0b00111000) >> 3]);
         }
         // C(Condition): Conditional call (takes 3 or 5 cycles)
         else if ((*instruction & 0b11000111) == 0b11000100)
         {
             opsize = 3;
-            printf("%02X %02X    C%01X %02X %02X", instruction[1], instruction[2], (*instruction & 0b00111000) >> 3, instruction[2], instruction[1]);
+            printf("%02X %02X    C %s %02X %02X", instruction[1], instruction[2], conditions8080[(*instruction & 0b00111000) >> 3], instruction[2], instruction[1]);
         }
         // J(Condition): Conditional jump (takes 3 cycles)
         else if ((*instruction & 0b11000111) == 0b11000010)
         {
             opsize = 3;
-            printf("%02X %02X    J%01X %02X %02X", instruction[1], instruction[2], (*instruction & 0b00111000) >> 3, instruction[2], instruction[1]);
+            printf("%02X %02X    J %s %02X %02X", instruction[1], instruction[2], conditions8080[(*instruction & 0b00111000) >> 3], instruction[2], instruction[1]);
         }
         // CMP R: Compare Register
         else if ((*instruction & 0b11111000) == 0b10111000)
         {
             opsize = 1;
-            printf("         CMP %01X  (A) - (%01X)", (*instruction & 0b00000111), (*instruction & 0b00000111));
+            // CMP M: Compare memory (takes 2 cycles)
+            if ((*instruction & 0b11111111) == 0b10111110)
+            {
+                printf("         CMP M  (A) - ((H) (L))");
+            }
+            else
+            {
+                printf("         CMP %c  (A) - (%c)", registers8080[(*instruction & 0b00000111)], registers8080[(*instruction & 0b00000111)]);
+            }
+        }
+        // ORA r: OR Register
+        else if ((*instruction & 0b11111000) == 0b10110000)
+        {
+            // ORA M: OR Memory (takes 2 cycles)
+            if ((*instruction & 0b11111111) == 0b10110110)
+            {
+                printf("         ORA M  (A) <- (A) V ((H)(L))");
+            }
+            else
+            {
+                printf("         ORA r  (A) <- (A) V (r)");
+            }
         }
 
     }
