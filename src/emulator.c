@@ -1,22 +1,36 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 
-int disassembleOp8080(unsigned char *buffer, int pc);
+// Emulate step
+uint16_t emulateOp8080(unsigned char *buffer, int pc);
 
-// List of registers (the X register represents memory operations)
-char registers8080[] = {'B', 'C', 'D', 'E', 'H', 'L', 'X', 'A'};
+// Helper functions
+uint16_t getMemoryAddress();
+uint8_t stall_cycles = 0;
 
+// In order, the registers are: B, C, D, E, H, L, N/A, A
+uint8_t registers8080[8];
+
+// List of register names (the X register represents memory operations)
+char registerNames8080[] = {'B', 'C', 'D', 'E', 'H', 'L', 'X', 'A'};
+// List of register pairs
+char registerPairs8080[][10] = {"B-C", "D-E", "H-L", "SP"};
 // List of condition codes
 char conditions8080[][10] = {"NZ", " Z", "NC", " C", "PO", "PE", " P", " M"};
 
-// List of register pairs
-char registerPairs8080[][10] = {"B-C", "D-E", "H-L", "SP"};
+// Memory space (2^16 addresses)
+uint8_t memory8080[65536];
+
+// Instruction registers
+uint16_t SP = 65535;
+uint16_t pc = 0;
 
 
 int main(int argc, char** argv)
 {
     if (argc < 2) {
-        printf("Please include a file when running the 8080 disassembler.\n");
+        printf("Please include a file when running the 8080 emulator.\n");
         exit(1);
     }
     FILE *f = fopen(argv[1], "rb");
@@ -37,21 +51,24 @@ int main(int argc, char** argv)
     fclose(f);
 
     // Increment through rom and display every instruction
-    int pc = 0;
-    while (pc < fsize)
+    while (1)
     {
-    	printf("%04X    ", pc);
-        pc += disassembleOp8080(romBuffer, pc);
+        if (stall_cycles > 0) stall_cycles--;
+        else pc = emulateOp8080(romBuffer, pc);
     }
 
     return 0;
 
 }
 
-int disassembleOp8080(unsigned char *buffer, int pc)
+uint16_t emulateOp8080(unsigned char *buffer, int pc)
 {
     unsigned char *instruction = &buffer[pc];
     int opsize = 1;
+
+    // extra variables for the switch statement
+    uint16_t address;
+
 
     printf("%02X ", *instruction);
     switch(*instruction)
@@ -113,15 +130,43 @@ int disassembleOp8080(unsigned char *buffer, int pc)
         // ADI data: Add immediate (takes 2 cycles)
         case 0b11000110: opsize = 2; printf("%02X       ADI %02X  (A) <- (A) + %02X", instruction[1], instruction[1], instruction[1]); break;
         // XCHG: Exchange H and L with D and E
-        case 0b11101011: printf("         XCHG   (H) <-> (D) (L) <-> (E)"); break;
+        case 0b11101011: printf("         XCHG");
+        // Exchange H and D
+        registers8080[4] = registers8080[4] + registers8080[2];
+        registers8080[2] = registers8080[4] - registers8080[2];
+        registers8080[4] = registers8080[4] - registers8080[2];
+
+        // Exchange L and E
+        registers8080[5] = registers8080[5] + registers8080[3];
+        registers8080[3] = registers8080[5] - registers8080[3];
+        registers8080[5] = registers8080[5] - registers8080[3];
+        break;
         // SHLD addr: Store H and L direct (takes 5 cycles)
-        case 0b00100010: opsize = 3; printf("%02X %02X    SHLD %02X %02X  ((%02X)(%02X)) <- (L) ((%02X)(%02X) + 1) <- (H)", instruction[1], instruction[2], instruction[2], instruction[1], instruction[2], instruction[1], instruction[2], instruction[1]); break;
+        case 0b00100010: opsize = 3; printf("%02X %02X    SHLD %02X %02X", instruction[1], instruction[2], instruction[2], instruction[1]);
+        stall_cycles = 4;
+        address = ((uint16_t) instruction[2] << 8) + (uint16_t) instruction[1];
+        memory8080[address] = registers8080[5];         // L
+        memory8080[address + 1] = registers8080[4];    // H
+        break;
         // LHLD addr: Load H and L direct (takes 5 cycles)
-        case 0b00101010: opsize = 3; printf("%02X %02X    LHLD %02X %02X  (L) <- ((%02X)(%02X)) (H) <- ((%02X)(%02X) + 1)", instruction[1], instruction[2], instruction[2], instruction[1], instruction[2], instruction[1], instruction[2], instruction[1]); break;
+        case 0b00101010: opsize = 3; printf("%02X %02X    LHLD %02X %02X", instruction[1], instruction[2], instruction[2], instruction[1]);
+        stall_cycles = 4;
+        address = ((uint16_t) instruction[2] << 8) + (uint16_t) instruction[1];
+        registers8080[5] = memory8080[address];         // L
+        registers8080[4] = memory8080[address + 1];     // H
+        break;
         // STA addr: Store Accumulator direct (takes 4 cycles)
-        case 0b00110010: opsize = 3; printf("%02X %02X    STA %02X %02X  ((%02X)(%02X)) <- (A)", instruction[1], instruction[2], instruction[2], instruction[1], instruction[2], instruction[1]); break;
+        case 0b00110010: opsize = 3; printf("%02X %02X    STA %02X %02X", instruction[1], instruction[2], instruction[2], instruction[1]);
+        stall_cycles = 3;
+        address = ((uint16_t) instruction[2] << 8) + (uint16_t) instruction[1];
+        memory8080[address] = registers8080[7];         // A
+        break;
         // LDA addr: Load Accumulator direct (takes 4 cycles)
-        case 0b00111010: opsize = 3; printf("%02X %02X    LDA %02X %02X  (A) <- ((%02X)(%02X))", instruction[1], instruction[2], instruction[2], instruction[1], instruction[2], instruction[1]); break;
+        case 0b00111010: opsize = 3; printf("%02X %02X    LDA %02X %02X", instruction[1], instruction[2], instruction[2], instruction[1]); 
+        stall_cycles = 3;
+        address = ((uint16_t) instruction[2] << 8) + (uint16_t) instruction[1];
+        registers8080[7] = memory8080[address];         // A
+        break;
         // Unused codes
         case 0b00001000: printf("         UNKNOWN"); break;
         default: opsize = 0; break;
@@ -376,19 +421,38 @@ int disassembleOp8080(unsigned char *buffer, int pc)
         else if ((*instruction & 0b11001111) == 0b00000010)
         {
         	opsize = 1;
-            printf("         STAX %s  ((%s)) <- (A)", registerPairs8080[(*instruction & 0b00110000) >> 4], registerPairs8080[(*instruction & 0b00110000) >> 4]);
+            printf("         STAX %s", registerPairs8080[(*instruction & 0b00110000) >> 4]);
+            stall_cycles = 1;
+            uint16_t address = ((uint16_t) registers8080[(*instruction & 0b00110000) >> 3] << 8) + (uint16_t) registers8080[((*instruction & 0b00110000) >> 3) + 1];
+            memory8080[address] = registers8080[7];
         }
         // LDAX rp: Load Accumulator indirect (takes 2 cycles)
         else if ((*instruction & 0b11001111) == 0b00001010)
         {
         	opsize = 1;
-            printf("         LDAX %s  (A) <- ((%s))", registerPairs8080[(*instruction & 0b00110000) >> 4], registerPairs8080[(*instruction & 0b00110000) >> 4]);
+            printf("         LDAX %s", registerPairs8080[(*instruction & 0b00110000) >> 4]);
+            stall_cycles = 1;
+            uint16_t address = ((uint16_t) registers8080[(*instruction & 0b00110000) >> 3] << 8) + (uint16_t) registers8080[((*instruction & 0b00110000) >> 3) + 1];
+            registers8080[7] = memory8080[address];
         }
         // LXI rp, data: Load register pair immediate (takes 3 cycles)
         else if ((*instruction & 0b11001111) == 0b00000001)
         {
             opsize = 3;
-            printf("%02X %02X    LXI %s  (rh) <- (%02X) (rl) <- (%02X)", instruction[1], instruction[2], registerPairs8080[(*instruction & 0b00110000) >> 4], instruction[2], instruction[1]);
+            printf("%02X %02X    LXI %s", instruction[1], instruction[2], registerPairs8080[(*instruction & 0b00110000) >> 4]);
+            stall_cycles = 2;
+            // Loading to the stack pointer
+            if (((*instruction & 0b00110000) >> 4) == 3)
+            {
+                uint16_t immediate = ((uint16_t) instruction[2] << 8) + (uint16_t) instruction[1];
+                SP = immediate;
+            }
+            // Loading to another register pair
+            else
+            {
+                registers8080[(*instruction & 0b00110000) >> 3] = instruction[2];
+                registers8080[((*instruction & 0b00110000) >> 3) + 1] = instruction[1];
+            }
         }
         // MVI
         else if ((*instruction & 0b11000111) == 0b00000110)
@@ -397,12 +461,17 @@ int disassembleOp8080(unsigned char *buffer, int pc)
             // MVI M, data: Add memory (takes 3 cycles)
             if ((*instruction & 0b11111111) == 0b00110110)
             {
-                printf("%02X       MVI M, %02X  ((H)(L)) <-- %02X", instruction[1], instruction[1], instruction[1]);
+                printf("%02X       MVI M, %02X", instruction[1], instruction[1]);
+                stall_cycles = 2;
+                uint16_t address = getMemoryAddress();
+                memory8080[address] = instruction[1];
             }
             // MVI r, data: Move Immediate (takes 2 cycles)
             else
             {
-                printf("%02X       MVI %c, %02X  (%c) <-- %02X", instruction[1], registers8080[(*instruction & 0b00111000) >> 3], instruction[1], registers8080[(*instruction & 0b00111000) >> 3], instruction[1]);
+                printf("%02X       MVI %c, %02X", instruction[1], registerNames8080[(*instruction & 0b00111000) >> 3], instruction[1]);
+                stall_cycles = 1;
+                registers8080[(*instruction & 0b00111000) >> 3] = instruction[1];
             }
         }
         // MOV
@@ -412,26 +481,33 @@ int disassembleOp8080(unsigned char *buffer, int pc)
             // MOV M, r: Move to memory (takes 2 cycles)
             if ((*instruction & 0b11111000) == 0b01110000)
             {
-                printf("         MOV M, %c  ((H)(L)) <- (%c)", registers8080[(*instruction & 0b00000111)], registers8080[(*instruction & 0b00000111)]);
+                printf("         MOV M, %c", registerNames8080[(*instruction & 0b00000111)]);
+                stall_cycles = 1;
+                uint16_t address = getMemoryAddress();
+                memory8080[address] = registers8080[(*instruction & 0b00111000) >> 3];
             }
             // MOV r, M: Move from memory (takes 2 cycles)
             else if ((*instruction & 0b11000111) == 0b01000110)
             {
-                printf("         MOV %c, M  (%c) <- ((H)(L))", registers8080[(*instruction & 0b00111000) >> 3], registers8080[(*instruction & 0b00111000) >> 3]);
+                printf("         MOV %c, M", registerNames8080[(*instruction & 0b00111000) >> 3]);
+                stall_cycles = 1;
+                uint16_t address = getMemoryAddress();
+                registers8080[(*instruction & 0b00111000) >> 3] = memory8080[address];
             }
             // MOV r1, r2: Move Register
             else
             {
-                printf("         MOV %c, %c  (%c) <- (%c)", registers8080[(*instruction & 0b00111000) >> 3], registers8080[(*instruction & 0b00000111)], registers8080[(*instruction & 0b00111000) >> 3], registers8080[(*instruction & 0b00000111)]);
+                printf("         MOV %c, %c", registerNames8080[(*instruction & 0b00111000) >> 3], registerNames8080[(*instruction & 0b00000111)]);
+                registers8080[(*instruction & 0b00111000) >> 3] = registers8080[(*instruction & 0b00000111)];
             }
         }
     }
 
-    if (opsize == 0) {
-    	opsize = 1;
-    	printf(" error: UNKNOWN OPCODE");
-    }
-
     printf("\n");
-    return opsize;
+    // return the address of the next instruction
+    return opsize + pc;
+}
+
+uint16_t getMemoryAddress() {
+    return ((uint16_t) registers8080[4] << 8) + (uint16_t) registers8080[5];
 }
